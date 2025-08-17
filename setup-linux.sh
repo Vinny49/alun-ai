@@ -1284,51 +1284,18 @@ cleanup_and_exit() {
 # Set up final cleanup trap
 trap 'cleanup_and_exit 130' INT TERM
 
-# Add a global timeout to prevent hanging (30 minutes max)
-(
-    sleep 1800  # 30 minutes
-    echo ""
-    print_error "Script timeout after 30 minutes - forcing exit"
-    print_error "This may indicate a network issue or system problem"
-    kill -TERM $$ 2>/dev/null
-) &
-TIMEOUT_PID=$!
 
-# Clean up timeout process on successful completion
-cleanup_timeout() {
-    if [ -n "$TIMEOUT_PID" ]; then
-        kill $TIMEOUT_PID 2>/dev/null
-        wait $TIMEOUT_PID 2>/dev/null
-    fi
-}
-
-# Update cleanup function to include timeout cleanup
+# Cleanup function to ensure clean exit
 cleanup_and_exit() {
     local exit_code=${1:-0}
     
-    # Clean up timeout process
-    cleanup_timeout
-    
-    # Kill any background jobs
-    jobs -p | xargs -r kill >/dev/null 2>&1
-    
-    # Wait for any remaining background processes
-    wait >/dev/null 2>&1
-    
-    # Clean up any temporary files that might still exist
-    rm -f "/tmp/setup_copied_$$" "/tmp/setup_skipped_$$" "/tmp/setup_updated_$$" 2>/dev/null
-    
-    # Debug output before final exit
-    echo "DEBUG: About to exit with code: $exit_code" >&2
+    # Quick cleanup of temp files
+    rm -f "/tmp/setup_copied_$$" "/tmp/setup_skipped_$$" "/tmp/setup_updated_$$" 2>/dev/null || true
     
     # Ensure clean exit
     exit $exit_code
 }
 
 # Run main function and ensure clean exit
-echo "DEBUG: Starting main function..." >&2
 main "$@"
-main_exit_code=$?
-echo "DEBUG: Main function completed with exit code: $main_exit_code" >&2
-echo "DEBUG: Calling cleanup_and_exit..." >&2
-cleanup_and_exit $main_exit_code
+cleanup_and_exit $?
