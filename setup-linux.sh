@@ -31,6 +31,12 @@ DISTRO=""
 PACKAGE_MANAGER=""
 INSTALL_CMD=""
 UPDATE_CMD=""
+TEMP_CLONE_DIR=""
+JIRA_TEMP_DIR=""
+
+# Initialize cleanup trap early to handle any interruptions
+trap 'cleanup_and_exit 130' INT TERM
+trap 'cleanup_temp_dirs' EXIT
 
 # Functions for colored output
 print_status() {
@@ -426,8 +432,7 @@ clone_repository() {
     AGENTS_DIR="$HOME/.claude/agents"
     TEMP_CLONE_DIR=$(mktemp -d)
     
-    # Set up cleanup trap
-    trap 'rm -rf "$TEMP_CLONE_DIR" 2>/dev/null; rm -f "/tmp/setup_copied_$$" "/tmp/setup_skipped_$$" "/tmp/setup_updated_$$" 2>/dev/null' EXIT
+    # Variable is now initialized, global trap will handle cleanup
     
     # Always clone to temporary directory first with timeout
     print_status "Downloading latest agents repository..."
@@ -655,12 +660,10 @@ install_jira_cli() {
     print_status "Download URL: $download_url"
     
     # Create temporary directory with cleanup trap
-    local temp_dir
-    temp_dir=$(mktemp -d)
-    local temp_file="$temp_dir/jira-cli.tar.gz"
+    JIRA_TEMP_DIR=$(mktemp -d)
+    local temp_file="$JIRA_TEMP_DIR/jira-cli.tar.gz"
     
-    # Set up cleanup trap - simplified to avoid issues with trap chaining
-    trap 'rm -rf "$temp_dir" 2>/dev/null' EXIT
+    # Note: cleanup handled by global trap
     
     # Download file with proper error checking
     print_status "Downloading Jira CLI ${latest_release} for ${arch}..."
@@ -732,7 +735,7 @@ install_jira_cli() {
     fi
     
     # Create extraction directory
-    local extract_dir="$temp_dir/extract"
+    local extract_dir="$JIRA_TEMP_DIR/extract"
     mkdir -p "$extract_dir"
     
     if ! tar -xzf "$temp_file" -C "$extract_dir" 2>/dev/null; then
@@ -1109,8 +1112,7 @@ test_changes() {
     print_status "Downloading latest agents repository for comparison..."
     if ! git clone https://github.com/alun-ai/agents.git "$TEMP_CLONE_DIR" 2>/dev/null; then
         print_error "Failed to clone agents repository"
-        rm -rf "$TEMP_CLONE_DIR"
-        exit 1
+        return 1
     fi
     
     print_status "Analyzing changes..."
@@ -1156,8 +1158,6 @@ test_changes() {
             fi
         fi
     done
-    
-    rm -rf "$TEMP_CLONE_DIR"
     
     echo ""
     print_success "Test completed - no files were actually changed"
@@ -1264,38 +1264,65 @@ main() {
     fi
 }
 
+
+# Cleanup temporary directories and files safely
+cleanup_temp_dirs() {
+    # Use a local variable to prevent issues with unbound variables
+    local temp_clone_dir="${TEMP_CLONE_DIR:-}"
+    local jira_temp_dir="${JIRA_TEMP_DIR:-}"
+    
+    # Clean up temporary directories if they exist
+    if [ -n "$temp_clone_dir" ] && [ -d "$temp_clone_dir" ]; then
+        # Only print status if we have the function available and stderr is available
+        if command -v print_status >/dev/null 2>&1 && [ -t 2 ]; then
+            print_status "Cleaning up temporary clone directory: $temp_clone_dir" >/dev/stderr || true
+        fi
+        rm -rf "$temp_clone_dir" 2>/dev/null || true
+    fi
+    
+    if [ -n "$jira_temp_dir" ] && [ -d "$jira_temp_dir" ]; then
+        # Only print status if we have the function available and stderr is available
+        if command -v print_status >/dev/null 2>&1 && [ -t 2 ]; then
+            print_status "Cleaning up temporary Jira directory: $jira_temp_dir" >/dev/stderr || true
+        fi
+        rm -rf "$jira_temp_dir" 2>/dev/null || true
+    fi
+    
+    # Clean up temporary files
+    rm -f "/tmp/setup_copied_$$" "/tmp/setup_skipped_$$" "/tmp/setup_updated_$$" 2>/dev/null || true
+}
+
 # Cleanup function to ensure clean exit
 cleanup_and_exit() {
     local exit_code=${1:-0}
     
-    # Kill any background jobs
-    jobs -p | xargs -r kill >/dev/null 2>&1
+    # Print cleanup message if we can
+    if command -v print_warning >/dev/null 2>&1 && [ -t 2 ]; then
+        print_warning "Script interrupted, cleaning up..." >/dev/stderr || true
+    fi
+    
+    # Kill any background jobs safely
+    if command -v jobs >/dev/null 2>&1; then
+        local job_pids
+        job_pids=$(jobs -p 2>/dev/null || echo "")
+        if [ -n "$job_pids" ]; then
+            echo "$job_pids" | xargs -r kill >/dev/null 2>&1 || true
+        fi
+    fi
     
     # Wait for any remaining background processes
-    wait >/dev/null 2>&1
+    wait >/dev/null 2>&1 || true
     
-    # Clean up any temporary files that might still exist
-    rm -f "/tmp/setup_copied_$$" "/tmp/setup_skipped_$$" "/tmp/setup_updated_$$" 2>/dev/null
-    
-    # Ensure clean exit
-    exit $exit_code
-}
-
-# Set up final cleanup trap
-trap 'cleanup_and_exit 130' INT TERM
-
-
-# Cleanup function to ensure clean exit
-cleanup_and_exit() {
-    local exit_code=${1:-0}
-    
-    # Quick cleanup of temp files
-    rm -f "/tmp/setup_copied_$$" "/tmp/setup_skipped_$$" "/tmp/setup_updated_$$" 2>/dev/null || true
+    # Clean up temporary directories and files
+    cleanup_temp_dirs
     
     # Ensure clean exit
     exit $exit_code
 }
 
-# Run main function and ensure clean exit
-main "$@"
-cleanup_and_exit $?
+# Run main function and handle exit properly
+if main "$@"; then
+    cleanup_and_exit 0
+else
+    cleanup_and_exit 1
+fi
